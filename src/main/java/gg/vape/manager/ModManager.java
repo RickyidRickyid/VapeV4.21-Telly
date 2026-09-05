@@ -42,7 +42,7 @@ import gg.vape.module.render.Search;
 import gg.vape.module.none.TextGuiSettings;
 import gg.vape.module.world.XRay;
 import gg.vape.module.world.AntiAFK;
-import gg.vape.module.world.Telly;
+import gg.vape.module.utility.Telly;
 import gg.vape.module.render.AntiDebuff;
 import gg.vape.module.render.Arrows;
 import gg.vape.module.render.Chams;
