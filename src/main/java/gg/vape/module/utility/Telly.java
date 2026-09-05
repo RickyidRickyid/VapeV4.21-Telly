@@ -5,17 +5,21 @@ import gg.vape.event.impl.EventPreTick;
 import gg.vape.module.Category;
 import gg.vape.module.Mod;
 import gg.vape.movement.MovementInputHelper;
+import gg.vape.rotation.FixedRotationController;
+import gg.vape.rotation.RotationManager;
+import gg.vape.utils.RotationUtil;
 import gg.vape.value.BooleanValue;
+import gg.vape.wrapper.impl.KeyBinding;
 import gg.vape.wrapper.impl.Minecraft;
 
 /**
  * Telly - scripted bridge automation (ported from Myau-cat myau.module.modules.Telly).
  *
- * CHUNK 1 of the incremental port: the core 21-phase scripted bridge cycle.
- * Each tick advances the phase and applies the scripted directional movement
- * (forward/strafe/jump) from the curve arrays. Rotation, auto-placement,
- * adaptive aim, anti-sway, GCD smoothing, packet handling and the activation
- * flow are added in subsequent commits.
+ * CHUNK 2: the 21-phase scripted bridge cycle now also drives rotation (via a
+ * FixedRotationController claimed on the RotationManager) and auto-places the
+ * held block by pressing the use-item key during the placement phases.
+ * Adaptive aim, anti-sway, GCD smoothing, packet handling and the activation
+ * flow arrive in chunks 3-4.
  */
 public class Telly extends Mod {
 
@@ -24,7 +28,6 @@ public class Telly extends Mod {
     private final BooleanValue showActivationHitbox;
     private final BooleanValue print;
 
-    // ---- 21-phase scripted bridge cycle (ported verbatim from Myau Telly) ----
     private static final float[] YAW_CURVE = {
         91.68f, 98.88f, 78.94f, 37.45f, 1.61f, -21.69f, -33.98f,
         -35.80f, -34.64f, -33.85f, -33.06f, -31.55f, -29.26f, -26.65f,
@@ -48,6 +51,9 @@ public class Telly extends Mod {
 
     private int cyclePhase = 19;
     private boolean running = false;
+    private float baseYaw = 0.0f;
+    private FixedRotationController rotationController;
+    private KeyBinding useItemKey;
 
     public Telly() {
         super("Telly", 0xffff4d4d, Category.UTILITY, "Scripted bridge automation (ported from Myau)");
@@ -55,6 +61,7 @@ public class Telly extends Mod {
         this.disableSafeWalk = BooleanValue.create(this, "disable-safewalk", true, "Disable SafeWalk while a script is running");
         this.showActivationHitbox = BooleanValue.create(this, "show-activation-hitbox", false, "Render the script activation hitbox");
         this.print = BooleanValue.create(this, "print", false, "Print script debug info to chat");
+        this.useItemKey = Minecraft.gameSettings().b$src$Lgg_vape_wrapper_impl_KeyBinding_$1yi3362();
     }
 
     @Override
@@ -62,13 +69,21 @@ public class Telly extends Mod {
         super.onEnable();
         this.running = true;
         this.cyclePhase = 19;
+        this.baseYaw = RotationUtil.c();
+        this.rotationController = new FixedRotationController(this.baseYaw + YAW_CURVE[19], PITCH_CURVE[19]);
+        RotationManager.INSTANCE.setController(this.rotationController);
     }
 
     @Override
     public void onDisable() {
         super.onDisable();
         this.running = false;
+        if (this.rotationController != null) {
+            RotationManager.INSTANCE.releaseController(this.rotationController);
+            this.rotationController = null;
+        }
         MovementInputHelper.releaseMovementKeys();
+        this.useItemKey.onTick(0);
     }
 
     @EventHandler
@@ -83,8 +98,14 @@ public class Telly extends Mod {
         float forward = FORWARD_CURVE[phase];
         float strafe = STRAFE_CURVE[phase];
         boolean jumping = phase >= 1 && phase <= 19;
+        boolean use = phase >= 7;
         MovementInputHelper.synchronizeDirectionalInput(forward > 0.01f, forward < -0.01f, strafe < -0.01f, strafe > 0.01f);
         MovementInputHelper.setJumpPressed(jumping);
-        this.cyclePhase = (phase + 1) % YAW_CURVE.length;
+        this.useItemKey.onTick(use ? 1 : 0);
+        int next = (phase + 1) % YAW_CURVE.length;
+        if (this.rotationController != null) {
+            this.rotationController.setTargetRotation(this.baseYaw + YAW_CURVE[next], PITCH_CURVE[next]);
+        }
+        this.cyclePhase = next;
     }
 }
