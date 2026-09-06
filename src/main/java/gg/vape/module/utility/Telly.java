@@ -15,11 +15,14 @@ import gg.vape.wrapper.impl.Minecraft;
 /**
  * Telly - scripted bridge automation (ported from Myau-cat myau.module.modules.Telly).
  *
- * CHUNK 2: the 21-phase scripted bridge cycle now also drives rotation (via a
- * FixedRotationController claimed on the RotationManager) and auto-places the
- * held block by pressing the use-item key during the placement phases.
- * Adaptive aim, anti-sway, GCD smoothing, packet handling and the activation
- * flow arrive in chunks 3-4.
+ * CHUNK 2.6: activation judgement. Enabling only ARMS the module; the bridge
+ * cycle begins when the player is sneaking (crouched), holding right-click and
+ * roughly aligned to the bridge diagonal (isActivationYawAligned). Per the
+ * Myau flow it then starts on release of sneak while still holding right-click
+ * (or while holding right-click + aligned). Stopping releases all controls.
+ * NOTE: the precise raycast-to-block-centre detection and the on-screen
+ * red/green "Activated" prompt are deferred (Vape's raycast/render accessors
+ * are obfuscated); this is a faithful simplification of the judgement.
  */
 public class Telly extends Mod {
 
@@ -48,9 +51,11 @@ public class Telly extends Mod {
         0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 0.0f, 0.0f, -1.0f, -1.0f, -1.0f, -1.0f
     };
+    private static final float ACTIVATION_YAW_TOLERANCE = 2.0f;
 
-    private int cyclePhase = 19;
+    private boolean armed = false;
     private boolean running = false;
+    private int cyclePhase = 19;
     private float baseYaw = 0.0f;
     private FixedRotationController rotationController;
     private KeyBinding useItemKey;
@@ -67,16 +72,63 @@ public class Telly extends Mod {
     @Override
     public void onEnable() {
         super.onEnable();
-        this.running = true;
-        this.cyclePhase = 19;
-        this.baseYaw = RotationUtil.c();
-        this.rotationController = new FixedRotationController(this.baseYaw + YAW_CURVE[19], PITCH_CURVE[19]);
-        RotationManager.INSTANCE.setController(this.rotationController);
+        this.armed = true;
+        this.running = false;
     }
 
     @Override
     public void onDisable() {
         super.onDisable();
+        this.stopAutomation();
+        this.armed = false;
+    }
+
+    @EventHandler
+    public void onTick(EventPreTick event) {
+        if (!this.isEnabled() || !this.armed) return;
+        if (Minecraft.thePlayer().isNull() || Minecraft.theWorld().isNull()) return;
+        if (this.running) {
+            // stop when the player stops holding right-click
+            if (!this.useItemKey.isKeyDown()) {
+                this.stopAutomation();
+                return;
+            }
+            this.advanceCycle();
+        } else if (this.getActivationReady()) {
+            // crouched + holding right-click + yaw aligned -> start bridging
+            this.beginAutomation();
+        }
+    }
+
+    // Simplified "ready/armed" judgement: crouch + hold RMB + roughly aligned to diagonal.
+    private boolean getActivationReady() {
+        boolean sneak = Minecraft.thePlayer().movementInput().D$src$Z$v5d6e8();
+        boolean rmb = this.useItemKey.isKeyDown();
+        return sneak && rmb && this.isActivationYawAligned(RotationUtil.c());
+    }
+
+    private boolean isActivationYawAligned(float yaw) {
+        float nearestDiagonal = Math.round((yaw - 45.0f) / 90.0f) * 90.0f + 45.0f;
+        return Math.abs(this.tellyWrapAngle(yaw - nearestDiagonal)) <= ACTIVATION_YAW_TOLERANCE;
+    }
+
+    private float tellyWrapAngle(float angle) {
+        float wrapped = angle % 360.0f;
+        if (wrapped > 180.0f) wrapped -= 360.0f;
+        if (wrapped < -180.0f) wrapped += 360.0f;
+        return wrapped;
+    }
+
+    private void beginAutomation() {
+        this.running = true;
+        this.cyclePhase = 19;
+        this.baseYaw = RotationUtil.c();
+        this.rotationController = new FixedRotationController(this.baseYaw + YAW_CURVE[19], PITCH_CURVE[19]);
+        RotationManager.INSTANCE.setController(this.rotationController);
+        MovementInputHelper.releaseMovementKeys();
+    }
+
+    private void stopAutomation() {
         this.running = false;
         if (this.rotationController != null) {
             RotationManager.INSTANCE.releaseController(this.rotationController);
@@ -84,13 +136,6 @@ public class Telly extends Mod {
         }
         MovementInputHelper.releaseMovementKeys();
         this.useItemKey.onTick(0);
-    }
-
-    @EventHandler
-    public void onTick(EventPreTick event) {
-        if (!this.isEnabled() || !this.running) return;
-        if (Minecraft.thePlayer().isNull() || Minecraft.theWorld().isNull()) return;
-        advanceCycle();
     }
 
     private void advanceCycle() {
