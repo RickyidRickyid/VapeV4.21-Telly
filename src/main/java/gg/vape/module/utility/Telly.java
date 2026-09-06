@@ -75,6 +75,8 @@ public class Telly extends Mod {
     private boolean stagedSprint = false;
     private int travelX = 0;
     private int travelZ = 0;
+    private int debugTick = 0;
+    private int placedTick = 0;
     private FixedRotationController rotationController;
 
     public Telly() {
@@ -107,6 +109,7 @@ public class Telly extends Mod {
             this.advanceCycle();
             this.applySmoothedRotation();
             this.applyMovement();
+            this.tryPlace();
         } else {
             this.onActivationTick();
         }
@@ -117,7 +120,12 @@ public class Telly extends Mod {
         boolean sneak = Minecraft.thePlayer().movementInput().D$src$Z$v5d6e8();
         boolean rmb = this.useItemKeyDown();
         boolean yawAligned = this.isActivationYawAligned(RotationUtil.c());
-        boolean lookingDown = this.getCameraPitch() >= ACTIVATION_PITCH;
+        float pitch = this.getCameraPitch();
+        boolean lookingDown = pitch >= ACTIVATION_PITCH;
+        this.debugTick++;
+        if (this.debugTick % 20 == 0) {
+            this.sendDebug("Telly[act] sneak=" + sneak + " rmb=" + rmb + " yawAligned=" + yawAligned + " pitch=" + pitch + " lookingDown=" + lookingDown);
+        }
         if (sneak && rmb && yawAligned && lookingDown) {
             this.beginAutomation();
         }
@@ -210,6 +218,48 @@ public class Telly extends Mod {
             this.stagedForward > 0.03f, this.stagedForward < -0.03f,
             this.stagedStrafe > 0.5f, this.stagedStrafe < -0.5f);
         MovementInputHelper.setJumpPressed(this.stagedJump);
+    }
+
+    // ---- placement (Stage 1.5: aim managed rotation at bridge block + simulate right-click) ----
+    private void tryPlace() {
+        if (this.travelX == 0 && this.travelZ == 0) return;
+        // target: bridge block at/below the player, one behind the travel direction (Myau support+face model).
+        double px = Minecraft.thePlayer().z();
+        double py = Minecraft.thePlayer().N();
+        double pz = Minecraft.thePlayer().h();
+        double tx = px - this.travelX * 1.0;
+        double ty = Math.floor(py) - 1.0;
+        double tz = pz - this.travelZ * 1.0;
+        this.aimAtPoint(tx, ty + 1.0, tz);
+        if (this.rotationController != null) {
+            Minecraft.gameSettings().b$src$Lgg_vape_wrapper_impl_KeyBinding_$1yi3362().onTick(1);
+        }
+        this.placedTick++;
+        if (this.placedTick % 40 == 0) {
+            this.sendDebug("Telly[place] target=" + tx + "," + ty + "," + tz);
+        }
+    }
+
+    private void aimAtPoint(double tx, double ty, double tz) {
+        double px = Minecraft.thePlayer().z();
+        double py = Minecraft.thePlayer().N() + 1.62;
+        double pz = Minecraft.thePlayer().h();
+        double dx = tx - px;
+        double dy = ty - py;
+        double dz = tz - pz;
+        double horizontal = Math.sqrt(dx * dx + dz * dz);
+        if (horizontal < 1.0E-5 && Math.abs(dy) < 1.0E-5) return;
+        float yaw = (float)(Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+        float pitch = clamp((float)(-Math.toDegrees(Math.atan2(dy, horizontal))), -89.0f, 89.0f);
+        if (this.rotationController != null) {
+            this.rotationController.setTargetRotation(yaw, pitch);
+        }
+    }
+
+    private void sendDebug(String message) {
+        try {
+            Minecraft.thePlayer().sendChatMessage(message);
+        } catch (Exception ignored) {}
     }
 
     // ---- helpers ----
