@@ -2,26 +2,26 @@ package gg.vape.module.utility;
 
 import gg.vape.event.EventHandler;
 import gg.vape.event.impl.EventPreTick;
+import gg.vape.input.KeyBindingInputState;
 import gg.vape.module.Category;
 import gg.vape.module.Mod;
-import gg.vape.input.KeyBindingInputState;
 import gg.vape.movement.MovementInputHelper;
 import gg.vape.rotation.FixedRotationController;
 import gg.vape.rotation.RotationManager;
 import gg.vape.utils.RotationUtil;
 import gg.vape.value.BooleanValue;
+import gg.vape.value.NumberValue;
 import gg.vape.wrapper.impl.Minecraft;
 
 /**
- * Telly - faithful port of Myau-cat myau.module.modules.Telly (STAGE 1).
- *
- * Keeps the Myau behaviour model and swaps only the bottom layer to Vape APIs:
- *  - Activation: sneak + look-down + yaw-aligned -> begin (Myau arm/begin flow).
- *  - Cycle: 21-phase yaw/pitch/forward/strafe curves.
+ * Telly - fused: Myau Telly script (21-phase cycle + activation) on the Vape
+ * native engine (managed rotation + useItem placement).
+ *  - Activation: sneak + hold RMB + look down (pitch>=75) + yaw-aligned -> red->green -> begin.
+ *  - Cycle: Myau 21-phase yaw/pitch/forward/strafe curves.
  *  - Rotation: Vape managed rotation (FixedRotationController + RotationManager).
  *  - Movement: MovementInputHelper.
- * Placement, adaptive aim, anti-sway, GCD smoothing, ghost blocks, packets and
- * render arrive in Stages 2-7 (no placeholder-marked-done).
+ *  - Placement: aim at bridge point (atan2) + useItem (simulated right-click).
+ * Render (red/green prompt) arrives in a later pass.
  */
 public class Telly extends Mod {
 
@@ -56,32 +56,19 @@ public class Telly extends Mod {
         0.0f, 0.0f, 0.0f, -1.0f, -1.0f, -1.0f, -1.0f
     };
 
-    // ---- state ----
     private boolean armed = false;
     private boolean running = false;
     private int cyclePhase = 19;
     private float baseYaw = 0.0f;
-    private float scriptedRotationYaw = 0.0f;
-    private float scriptedRotationPitch = 0.0f;
-    private float rotationStartYaw = 0.0f;
-    private float rotationStartPitch = 0.0f;
-    private float rotationTargetYaw = 0.0f;
-    private float rotationTargetPitch = 0.0f;
-    private long rotationStartedAt = 0L;
-    private long rotationDuration = 50L;
-    private boolean rotationActive = false;
-    private float stagedForward = -1.0f;
-    private float stagedStrafe = -1.0f;
-    private boolean stagedJump = false;
-    private boolean stagedSprint = false;
     private int travelX = 0;
     private int travelZ = 0;
-    private int debugTick = 0;
-    private int placedTick = 0;
+    private float scriptedRotationYaw = 0.0f;
+    private float scriptedRotationPitch = 0.0f;
     private FixedRotationController rotationController;
+    private int debugTick = 0;
 
     public Telly() {
-        super("Telly", 0xffff4d4d, Category.UTILITY, "Scripted bridge automation (faithful port)");
+        super("Telly", 0xffff4d4d, Category.UTILITY, "Scripted bridge automation (Myau-fused)");
         this.autoSwap = BooleanValue.create(this, "auto-swap", true, "Automatically swap to the best item");
         this.disableSafeWalk = BooleanValue.create(this, "disable-safewalk", true, "Disable SafeWalk while a script is running");
         this.showActivationHitbox = BooleanValue.create(this, "show-activation-hitbox", false, "Render the script activation hitbox");
@@ -98,8 +85,13 @@ public class Telly extends Mod {
     @Override
     public void onDisable() {
         super.onDisable();
-        this.stopAutomation();
+        this.running = false;
         this.armed = false;
+        if (this.rotationController != null) {
+            RotationManager.INSTANCE.releaseController(this.rotationController);
+            this.rotationController = null;
+        }
+        MovementInputHelper.releaseMovementKeys();
     }
 
     @EventHandler
@@ -108,7 +100,7 @@ public class Telly extends Mod {
         if (Minecraft.thePlayer().isNull() || Minecraft.theWorld().isNull()) return;
         if (this.running) {
             this.advanceCycle();
-            this.applySmoothedRotation();
+            this.applyRotation();
             this.applyMovement();
             this.tryPlace();
         } else {
@@ -116,16 +108,18 @@ public class Telly extends Mod {
         }
     }
 
-    // ---- Activation (Stage 1) ----
+    // ---- Activation (Myau: sneak + RMB + look down + yaw aligned -> begin) ----
     private void onActivationTick() {
         boolean sneak = Minecraft.thePlayer().movementInput().D$src$Z$v5d6e8();
-        boolean rmb = this.useItemKeyDown();
+        boolean rmb = KeyBindingInputState.isMouseButtonDown(1);
         boolean yawAligned = this.isActivationYawAligned(RotationUtil.c());
-        float pitch = this.getCameraPitch();
+        float pitch = Minecraft.thePlayer().V();
         boolean lookingDown = pitch >= ACTIVATION_PITCH;
-        this.debugTick++;
-        if (this.debugTick % 200 == 0) {
-            this.sendDebug("Telly[act] sneak=" + sneak + " rmb=" + rmb + " yawAligned=" + yawAligned + " pitch=" + pitch + " lookingDown=" + lookingDown);
+        if (this.showActivationHitbox.getEffectiveValue()) {
+            this.debugTick++;
+            if (this.debugTick % 200 == 0) {
+                this.sendDebug("Telly[act] sneak=" + sneak + " rmb=" + rmb + " yaw=" + yawAligned + " pitch=" + pitch);
+            }
         }
         if (sneak && rmb && yawAligned && lookingDown) {
             this.beginAutomation();
@@ -138,93 +132,46 @@ public class Telly extends Mod {
     }
 
     private void beginAutomation() {
-        if (Minecraft.thePlayer().isNull() || !this.isHoldingBlock()) return;
         this.baseYaw = Math.round((RotationUtil.c() - 45.0f) / 90.0f) * 90.0f + 45.0f;
         this.calculateTravelDirection(this.baseYaw);
         this.cyclePhase = 19;
-        this.stagedForward = -1.0f;
-        this.stagedStrafe = -1.0f;
-        this.stagedJump = false;
-        this.stagedSprint = false;
         this.scriptedRotationYaw = this.baseYaw;
         this.scriptedRotationPitch = SCRIPT_PITCH;
-        this.rotationStartYaw = this.baseYaw;
-        this.rotationStartPitch = SCRIPT_PITCH;
-        this.rotationTargetYaw = this.baseYaw;
-        this.rotationTargetPitch = SCRIPT_PITCH;
-        this.rotationActive = false;
         this.armed = false;
         this.running = true;
         this.rotationController = new FixedRotationController(this.baseYaw, SCRIPT_PITCH);
         RotationManager.INSTANCE.setController(this.rotationController);
     }
 
-    private void stopAutomation() {
-        this.running = false;
-        if (this.rotationController != null) {
-            RotationManager.INSTANCE.releaseController(this.rotationController);
-            this.rotationController = null;
-        }
-        MovementInputHelper.releaseMovementKeys();
-        this.armed = true;
-    }
-
-    // ---- Cycle (Stage 1) ----
+    // ---- Cycle (Myau 21-phase) ----
     private void advanceCycle() {
         int phase = this.cyclePhase;
-        this.stagedForward = FORWARD_CURVE[phase];
-        this.stagedStrafe = STRAFE_CURVE[phase];
-        this.stagedJump = phase >= 1 && phase <= 19;
-        this.stagedSprint = phase == 0 || phase == 1;
         int next = (phase + 1) % CYCLE_LENGTH;
-        this.setRotationTarget(this.baseYaw + YAW_CURVE[next], PITCH_CURVE[next], 50L);
         this.cyclePhase = next;
     }
 
-    // ---- Rotation (Stage 1): Myau interpolation via Vape managed rotation ----
-    private void setRotationTarget(float targetYaw, float targetPitch, long duration) {
-        this.rotationStartYaw = this.scriptedRotationYaw;
-        this.rotationStartPitch = this.scriptedRotationPitch;
-        this.rotationTargetYaw = this.rotationStartYaw + this.tellyWrapAngle(targetYaw - this.rotationStartYaw);
-        this.rotationTargetPitch = clamp(targetPitch, -90.0f, 90.0f);
-        this.rotationStartedAt = System.currentTimeMillis();
-        this.rotationDuration = Math.max(1L, duration);
-        this.rotationActive = true;
-        this.applySmoothedRotation();
-    }
-
-    private void applySmoothedRotation() {
-        if (!this.rotationActive) {
-            if (this.running) this.holdScriptedRotation();
-            return;
-        }
-        double progress = (double)(System.currentTimeMillis() - this.rotationStartedAt) / (double)this.rotationDuration;
-        if (progress < 0.0) progress = 0.0;
-        if (progress > 1.0) progress = 1.0;
-        this.scriptedRotationYaw = this.rotationStartYaw + (this.rotationTargetYaw - this.rotationStartYaw) * (float)progress;
-        this.scriptedRotationPitch = clamp(this.rotationStartPitch + (this.rotationTargetPitch - this.rotationStartPitch) * (float)progress, -90.0f, 90.0f);
-        this.holdScriptedRotation();
-        if (progress >= 1.0) this.rotationActive = false;
-    }
-
-    private void holdScriptedRotation() {
+    private void applyRotation() {
+        int phase = this.cyclePhase;
+        int next = (phase + 1) % CYCLE_LENGTH;
         if (this.rotationController != null) {
-            this.rotationController.setTargetRotation(this.scriptedRotationYaw, this.scriptedRotationPitch);
+            this.rotationController.setTargetRotation(this.baseYaw + YAW_CURVE[next], PITCH_CURVE[next]);
         }
     }
 
-    // ---- Movement (Stage 1) ----
     private void applyMovement() {
-        MovementInputHelper.synchronizeDirectionalInput(
-            this.stagedForward > 0.03f, this.stagedForward < -0.03f,
-            this.stagedStrafe > 0.5f, this.stagedStrafe < -0.5f);
-        MovementInputHelper.setJumpPressed(this.stagedJump);
+        int phase = this.cyclePhase;
+        float forward = FORWARD_CURVE[phase];
+        float strafe = STRAFE_CURVE[phase];
+        boolean jumping = phase >= 1 && phase <= 19;
+        MovementInputHelper.synchronizeDirectionalInput(forward > 0.03f, forward < -0.03f, strafe < -0.03f, strafe > 0.03f);
+        MovementInputHelper.setJumpPressed(jumping);
     }
 
-    // ---- placement (Stage 1.5: aim managed rotation at bridge block + simulate right-click) ----
+    // ---- Placement (Vape native: aim at bridge point + useItem) ----
     private void tryPlace() {
-        if (this.travelX == 0 && this.travelZ == 0) return;
-        // target: bridge block at/below the player, one behind the travel direction (Myau support+face model).
+        int phase = this.cyclePhase;
+        boolean use = phase >= 7;
+        if (!use) return;
         double px = Minecraft.thePlayer().z();
         double py = Minecraft.thePlayer().N();
         double pz = Minecraft.thePlayer().h();
@@ -232,13 +179,7 @@ public class Telly extends Mod {
         double ty = Math.floor(py) - 1.0;
         double tz = pz - this.travelZ * 1.0;
         this.aimAtPoint(tx, ty + 1.0, tz);
-        if (this.rotationController != null) {
-            Minecraft.gameSettings().b$src$Lgg_vape_wrapper_impl_KeyBinding_$1yi3362().onTick(1);
-        }
-        this.placedTick++;
-        if (this.placedTick % 200 == 0) {
-            this.sendDebug("Telly[place] target=" + tx + "," + ty + "," + tz);
-        }
+        Minecraft.gameSettings().b$src$Lgg_vape_wrapper_impl_KeyBinding_$1yi3362().onTick(1);
     }
 
     private void aimAtPoint(double tx, double ty, double tz) {
@@ -257,25 +198,6 @@ public class Telly extends Mod {
         }
     }
 
-    private void sendDebug(String message) {
-        try {
-            Minecraft.thePlayer().sendChatMessage(message);
-        } catch (Exception ignored) {}
-    }
-
-    // ---- helpers ----
-    private boolean useItemKeyDown() {
-        return KeyBindingInputState.isMouseButtonDown(1);
-    }
-
-    private boolean isHoldingBlock() {
-        return true;
-    }
-
-    private float getCameraPitch() {
-        return Minecraft.thePlayer().V();
-    }
-
     private void calculateTravelDirection(float yaw) {
         double radians = Math.toRadians(yaw);
         double rawX = Math.sin(radians) - Math.cos(radians);
@@ -287,6 +209,10 @@ public class Telly extends Mod {
             this.travelX = 0;
             this.travelZ = rawZ >= 0.0 ? 1 : -1;
         }
+    }
+
+    private void sendDebug(String message) {
+        try { Minecraft.thePlayer().sendChatMessage(message); } catch (Exception ignored) {}
     }
 
     private float tellyWrapAngle(float angle) {
