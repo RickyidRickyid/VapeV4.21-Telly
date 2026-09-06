@@ -9,12 +9,13 @@ import gg.vape.rotation.FixedRotationController;
 import gg.vape.rotation.RotationManager;
 import gg.vape.utils.RotationUtil;
 import gg.vape.utils.MathUtil;
-import gg.vape.rotation.RotationManager;
 import gg.vape.wrapper.impl.RayTraceResult;
 import gg.vape.wrapper.impl.RayTraceResult_type;
 import gg.vape.wrapper.impl.WorldClient;
 import gg.vape.value.BooleanValue;
 import gg.vape.wrapper.impl.KeyBinding;
+import gg.vape.wrapper.impl.Block;
+import gg.vape.wrapper.impl.Blocks;
 import gg.vape.wrapper.impl.Minecraft;
 
 import java.util.HashSet;
@@ -306,10 +307,8 @@ public class Telly extends Mod {
         return py == pos[1] && Math.abs(px - (pos[0] + 0.5)) < 0.9 && Math.abs(pz - (pos[2] + 0.5)) < 0.9;
     }
     private boolean isReplaceable(int x, int y, int z) {
-        // Stage B: use Vape world air-block check where exposed; fallback true.
-        try {
-            return Minecraft.theWorld().h();
-        } catch (Exception e) { return true; }
+        Block block = Minecraft.theWorld().getBlock(x, y, z);
+        return block.equals(Blocks.air());
     }
     private double lipDistance(int face, int[] pos) {
         double px = Minecraft.thePlayer().z();
