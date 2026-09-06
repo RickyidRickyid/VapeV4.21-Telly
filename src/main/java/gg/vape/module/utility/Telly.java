@@ -73,6 +73,7 @@ public class Telly extends Mod {
         this.disableSafeWalk = BooleanValue.create(this, "disable-safewalk", true, "Disable SafeWalk while a script is running");
         this.showActivationHitbox = BooleanValue.create(this, "show-activation-hitbox", false, "Render the script activation hitbox");
         this.print = BooleanValue.create(this, "print", false, "Print script debug info to chat");
+        this.addValue(this.autoSwap, this.disableSafeWalk, this.showActivationHitbox, this.print);
     }
 
     @Override
