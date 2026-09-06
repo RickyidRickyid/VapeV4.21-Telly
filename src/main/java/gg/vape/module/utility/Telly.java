@@ -4,6 +4,7 @@ import gg.vape.event.EventHandler;
 import gg.vape.event.impl.EventPreTick;
 import gg.vape.module.Category;
 import gg.vape.module.Mod;
+import gg.vape.input.KeyBindingInputState;
 import gg.vape.movement.MovementInputHelper;
 import gg.vape.rotation.FixedRotationController;
 import gg.vape.rotation.RotationManager;
@@ -123,7 +124,7 @@ public class Telly extends Mod {
         float pitch = this.getCameraPitch();
         boolean lookingDown = pitch >= ACTIVATION_PITCH;
         this.debugTick++;
-        if (this.debugTick % 20 == 0) {
+        if (this.debugTick % 200 == 0) {
             this.sendDebug("Telly[act] sneak=" + sneak + " rmb=" + rmb + " yawAligned=" + yawAligned + " pitch=" + pitch + " lookingDown=" + lookingDown);
         }
         if (sneak && rmb && yawAligned && lookingDown) {
@@ -235,7 +236,7 @@ public class Telly extends Mod {
             Minecraft.gameSettings().b$src$Lgg_vape_wrapper_impl_KeyBinding_$1yi3362().onTick(1);
         }
         this.placedTick++;
-        if (this.placedTick % 40 == 0) {
+        if (this.placedTick % 200 == 0) {
             this.sendDebug("Telly[place] target=" + tx + "," + ty + "," + tz);
         }
     }
@@ -264,7 +265,7 @@ public class Telly extends Mod {
 
     // ---- helpers ----
     private boolean useItemKeyDown() {
-        return Minecraft.gameSettings().b$src$Lgg_vape_wrapper_impl_KeyBinding_$1yi3362().isKeyDown();
+        return KeyBindingInputState.isMouseButtonDown(1);
     }
 
     private boolean isHoldingBlock() {
