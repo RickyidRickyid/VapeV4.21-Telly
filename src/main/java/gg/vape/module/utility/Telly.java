@@ -12,17 +12,17 @@ import gg.vape.value.BooleanValue;
 import gg.vape.wrapper.impl.KeyBinding;
 import gg.vape.wrapper.impl.Minecraft;
 
+import java.util.HashSet;
+
 /**
- * Telly - scripted bridge automation (ported from Myau-cat myau.module.modules.Telly).
+ * Telly - faithful port of Myau-cat myau.module.modules.Telly onto the Vape (gg.vape) Mod system.
  *
- * CHUNK 2.6: activation judgement. Enabling only ARMS the module; the bridge
- * cycle begins when the player is sneaking (crouched), holding right-click and
- * roughly aligned to the bridge diagonal (isActivationYawAligned). Per the
- * Myau flow it then starts on release of sneak while still holding right-click
- * (or while holding right-click + aligned). Stopping releases all controls.
- * NOTE: the precise raycast-to-block-centre detection and the on-screen
- * red/green "Activated" prompt are deferred (Vape's raycast/render accessors
- * are obfuscated); this is a faithful simplification of the judgement.
+ * STAGE A: STATE MACHINE. Ports the Myau activation / running / reset state
+ * transitions (armAutomation / beginAutomation / stopAutomation) and the state
+ * fields, wired to Vape's Mod onEnable/onDisable lifecycle and a tick hook.
+ * Placement, adaptive aim, raycast (Stage B-D), anti-sway (Stage E), GCD
+ * smoothing (Stage F), rendering (Stage G) and integration (Stage H) are
+ * stubbed/TODO and filled in by their own commits.
  */
 public class Telly extends Mod {
 
@@ -31,32 +31,77 @@ public class Telly extends Mod {
     private final BooleanValue showActivationHitbox;
     private final BooleanValue print;
 
-    private static final float[] YAW_CURVE = {
-        91.68f, 98.88f, 78.94f, 37.45f, 1.61f, -21.69f, -33.98f,
-        -35.80f, -34.64f, -33.85f, -33.06f, -31.55f, -29.26f, -26.65f,
-        -24.19f, -21.07f, -18.84f, -17.06f, -8.87f, 2.61f, 41.94f
-    };
-    private static final float[] PITCH_CURVE = {
-        64.31f, 59.95f, 60.57f, 61.46f, 60.64f, 58.89f, 56.91f,
-        56.63f, 58.65f, 61.63f, 64.20f, 66.74f, 68.69f, 70.64f,
-        73.01f, 75.37f, 77.46f, 78.56f, 78.90f, 77.22f, 72.25f
-    };
-    private static final float[] FORWARD_CURVE = {
-        1.0f, 1.0f, 0.0f, 0.0f, -1.0f, -1.0f, -1.0f,
-        -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f,
-        -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f
-    };
-    private static final float[] STRAFE_CURVE = {
-        -1.0f, -1.0f, -1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, -1.0f, -1.0f, -1.0f, -1.0f
-    };
     private static final float ACTIVATION_YAW_TOLERANCE = 2.0f;
+    private static final float ACTIVATION_PITCH = 75.0f;
+    private static final float SCRIPT_PITCH = 74.52f;
+    private static final int CYCLE_LENGTH = 21;
 
+    // ---- state (Stage A) ----
     private boolean armed = false;
     private boolean running = false;
+    private int setupTick = 0;
     private int cyclePhase = 19;
+    private float stagedForward = -1.0f;
+    private float stagedStrafe = -1.0f;
+    private boolean stagedJump = false;
+    private boolean stagedSprint = false;
     private float baseYaw = 0.0f;
+    private int travelX = 0;
+    private int travelZ = 0;
+    private double antiSwayLane = 0.0;
+    private float antiSwayYawOffset = 0.0f;
+    private int bridgeLaneBlock = 0;
+    private int bridgeStartProgress = 0;
+    private int[] latestStraightPlacedPos = null;
+    private int[] lastPlacedPos = null;
+    private boolean firstTellyPlacementPending = false;
+    private boolean adaptiveAimValid = false;
+    private float adaptiveAimYaw = 0.0f;
+    private float adaptiveAimPitch = 0.0f;
+    private long adaptiveAimUpdatedAt = 0L;
+    private long takeoverDetectionAt = 0L;
+    private boolean takeoverCameraValid = false;
+    private float takeoverCameraYaw = 0.0f;
+    private float takeoverCameraPitch = 0.0f;
+    private float takeoverAccumulated = 0.0f;
+    private long takeoverLastFrameAt = 0L;
+    private long freezeLastTickAt = 0L;
+    private boolean rotationActive = false;
+    private long rotationStartedAt = 0L;
+    private long rotationDuration = 50L;
+    private float rotationStartYaw = 0.0f;
+    private float rotationStartPitch = 0.0f;
+    private float rotationTargetYaw = 0.0f;
+    private float rotationTargetPitch = 0.0f;
+    private float scriptedRotationYaw = 0.0f;
+    private float scriptedRotationPitch = 0.0f;
+    private int rotationStepCounter = 0;
+    private int[] activationAnchorPos = null;
+    private int activationAnchorFace = -1;
+    private boolean activationMovementHeld = false;
+    private boolean eagleDisabledForActivation = false;
+    private boolean eagleWasDisabledByTelly = false;
+    private boolean antiSwayTapUsed = false;
+    private final HashSet<String> cancelledGhostBlocks = new HashSet<>();
+    private boolean tellyAutoPlaceWindow = false;
+    private boolean autoPlaceDebugActive = false;
+    private boolean safeWalkStateCaptured = false;
+    private boolean safeWalkWasEnabled = false;
+    private long activatePromptAt = 0L;
+    private long promptBrokeAt = 0L;
+    private float promptAlpha = 0.0f;
+    private long promptFadeLastAt = 0L;
+    private int promptFadeRgb = 0xFF5555;
+    private int[] hitboxLastPos = null;
+    private int hitboxLastFace = -1;
+    private boolean ignoreForwardUntilRelease = false;
+    private boolean ignoreBackUntilRelease = false;
+    private boolean ignoreLeftUntilRelease = false;
+    private boolean ignoreRightUntilRelease = false;
+    private boolean ignoreJumpUntilRelease = false;
+    private boolean ignoreSneakUntilRelease = false;
+    private boolean ignoreSprintUntilRelease = false;
+
     private FixedRotationController rotationController;
     private KeyBinding useItemKey;
 
@@ -72,85 +117,188 @@ public class Telly extends Mod {
     @Override
     public void onEnable() {
         super.onEnable();
-        this.armed = true;
-        this.running = false;
+        this.armAutomation();
     }
 
     @Override
     public void onDisable() {
         super.onDisable();
-        this.stopAutomation();
-        this.armed = false;
+        this.stopAutomation(false);
     }
 
     @EventHandler
     public void onTick(EventPreTick event) {
-        if (!this.isEnabled() || !this.armed) return;
+        if (!this.isEnabled()) return;
         if (Minecraft.thePlayer().isNull() || Minecraft.theWorld().isNull()) return;
+        // Stage A: state-machine hook. The real activation judgement (raycast edge
+        // detection) and the bridge cycle run here from Stage B onwards.
         if (this.running) {
-            // stop when the player stops holding right-click
-            if (!this.useItemKey.isKeyDown()) {
-                this.stopAutomation();
-                return;
-            }
-            this.advanceCycle();
-        } else if (this.getActivationReady()) {
-            // crouched + holding right-click + yaw aligned -> start bridging
-            this.beginAutomation();
+            this.onRunningTick();
+        } else {
+            this.onActivationTick();
         }
     }
 
-    // Simplified "ready/armed" judgement: crouch + hold RMB + roughly aligned to diagonal.
-    private boolean getActivationReady() {
-        boolean sneak = Minecraft.thePlayer().movementInput().D$src$Z$v5d6e8();
-        boolean rmb = this.useItemKey.isKeyDown();
-        return sneak && rmb && this.isActivationYawAligned(RotationUtil.c());
+    // ---- Stage A state machine ----
+    private void armAutomation() {
+        this.armed = true;
+        this.running = false;
+        this.activatePromptAt = 0L;
+        this.promptBrokeAt = 0L;
+        this.setupTick = 0;
+        this.cyclePhase = 19;
+        this.rotationActive = false;
+        this.activationMovementHeld = false;
+        this.eagleDisabledForActivation = false;
+        this.eagleWasDisabledByTelly = false;
+        this.printStatus("&eArmed. Sneak looking down, wait for green, hold rmb and release sneak");
     }
 
-    private boolean isActivationYawAligned(float yaw) {
-        float nearestDiagonal = Math.round((yaw - 45.0f) / 90.0f) * 90.0f + 45.0f;
-        return Math.abs(this.tellyWrapAngle(yaw - nearestDiagonal)) <= ACTIVATION_YAW_TOLERANCE;
+    private void beginAutomation() {
+        if (Minecraft.thePlayer().isNull() || !this.isHoldingBlock()) {
+            this.printStatus("&cHold blocks before starting");
+            return;
+        }
+        // snap to nearest diagonal so the whole bridge does not drift
+        this.baseYaw = Math.round((RotationUtil.c() - 45.0f) / 90.0f) * 90.0f + 45.0f;
+        this.calculateTravelDirection(this.baseYaw);
+        this.antiSwayLane = this.travelX != 0 ? Minecraft.thePlayer().z() : Minecraft.thePlayer().h();
+        this.antiSwayYawOffset = 0.0f;
+        this.antiSwayTapUsed = false;
+        this.cancelledGhostBlocks.clear();
+        this.captureActivationAnchor();
+        this.initializeStraightBridgeLane();
+        this.firstTellyPlacementPending = false;
+        this.adaptiveAimValid = false;
+        this.adaptiveAimUpdatedAt = 0L;
+        this.setupTick = 0;
+        this.cyclePhase = 19;
+        this.stagedForward = -1.0f;
+        this.stagedStrafe = -1.0f;
+        this.stagedJump = false;
+        this.stagedSprint = false;
+        this.armed = false;
+        this.running = true;
+        this.freezeLastTickAt = System.currentTimeMillis();
+        this.activationMovementHeld = false;
+        this.tellyAutoPlaceWindow = true;
+        this.scriptedRotationYaw = this.baseYaw;
+        this.scriptedRotationPitch = SCRIPT_PITCH;
+        this.rotationStartYaw = this.baseYaw;
+        this.rotationStartPitch = SCRIPT_PITCH;
+        this.rotationTargetYaw = this.baseYaw;
+        this.rotationTargetPitch = SCRIPT_PITCH;
+        this.rotationActive = false;
+        this.takeoverDetectionAt = 0L;
+        this.takeoverCameraValid = false;
+        this.clearInitialMovementHolds();
+        this.resetControllerState();
+        this.applyMovement(-1.0f, -1.0f, false, false);
+        this.setRotationTarget(this.baseYaw, SCRIPT_PITCH, 50L);
+        this.applySmoothedRotation();
+        this.applyUse(true);
+        this.printStatus("&aStarted");
     }
 
+    private void stopAutomation(boolean turnOffButton) {
+        boolean restoreEagleAfterStop = this.eagleWasDisabledByTelly;
+        this.armed = false;
+        this.running = false;
+        this.setupTick = 0;
+        this.cyclePhase = 19;
+        this.rotationActive = false;
+        this.activationMovementHeld = false;
+        this.eagleDisabledForActivation = false;
+        this.eagleWasDisabledByTelly = false;
+        this.tellyAutoPlaceWindow = false;
+        this.autoPlaceDebugActive = false;
+        this.antiSwayYawOffset = 0.0f;
+        this.antiSwayTapUsed = false;
+        this.firstTellyPlacementPending = false;
+        this.latestStraightPlacedPos = null;
+        this.activationAnchorPos = null;
+        this.activationAnchorFace = -1;
+        this.stagedForward = 0.0f;
+        this.stagedStrafe = 0.0f;
+        this.stagedJump = false;
+        this.stagedSprint = false;
+        this.adaptiveAimValid = false;
+        this.adaptiveAimUpdatedAt = 0L;
+        this.scriptedRotationYaw = 0.0f;
+        this.scriptedRotationPitch = 0.0f;
+        this.takeoverDetectionAt = 0L;
+        this.takeoverCameraValid = false;
+        this.takeoverCameraYaw = 0.0f;
+        this.takeoverCameraPitch = 0.0f;
+        this.takeoverAccumulated = 0.0f;
+        this.takeoverLastFrameAt = 0L;
+        try {
+            this.cancelledGhostBlocks.clear();
+            this.clearInitialMovementHolds();
+            this.resetControllerState();
+            MovementInputHelper.releaseMovementKeys();
+            this.restorePhysicalUse();
+        } catch (Exception ignored) {}
+        this.restoreSafeWalkState();
+        this.freezeLastTickAt = 0L;
+        this.armed = true;
+        this.activatePromptAt = 0L;
+        this.promptBrokeAt = 0L;
+        if (restoreEagleAfterStop) this.restoreEagleAfterTelly();
+        if (turnOffButton) this.printStatus("&eStopped. Sneak looking down to arm again");
+    }
+
+    // ---- Stage B+ hooks (stubbed, filled by later stages) ----
+    private void onActivationTick() {
+        // Stage B: raycast-based activation judgement (crouch + aim block edge -> begin).
+    }
+    private void onRunningTick() {
+        // Stage B/C/D: advance cycle + adaptive aim + real placement.
+    }
+    private boolean isHoldingBlock() {
+        // Stage D: check the held item is a usable block stack.
+        return false;
+    }
+    private void calculateTravelDirection(float yaw) { /* Stage D */ }
+    private void captureActivationAnchor() { /* Stage B */ }
+    private void initializeStraightBridgeLane() { /* Stage D */ }
+    private void clearInitialMovementHolds() { /* Stage C */ }
+    private void resetControllerState() {
+        if (this.rotationController != null) {
+            RotationManager.INSTANCE.releaseController(this.rotationController);
+            this.rotationController = null;
+        }
+    }
+    private void applyMovement(float forward, float strafe, boolean jump, boolean sprint) {
+        MovementInputHelper.synchronizeDirectionalInput(forward > 0.01f, forward < -0.01f, strafe < -0.01f, strafe > 0.01f);
+        MovementInputHelper.setJumpPressed(jump);
+    }
+    private void setRotationTarget(float yaw, float pitch, long duration) {
+        if (this.rotationController == null) {
+            this.rotationController = new FixedRotationController(yaw, pitch);
+            RotationManager.INSTANCE.setController(this.rotationController);
+        } else {
+            this.rotationController.setTargetRotation(yaw, pitch);
+        }
+    }
+    private void applySmoothedRotation() { /* Stage F */ }
+    private void applyUse(boolean pressed) {
+        this.useItemKey.onTick(pressed ? 1 : 0);
+    }
+    private void restorePhysicalUse() {
+        this.useItemKey.onTick(0);
+    }
+    private void restoreSafeWalkState() { /* Stage C */ }
+    private void restoreEagleAfterTelly() { /* Stage C */ }
+    private void printStatus(String message) {
+        if (this.print.getValue()) {
+            // Stage G: route through Vape chat/notification.
+        }
+    }
     private float tellyWrapAngle(float angle) {
         float wrapped = angle % 360.0f;
         if (wrapped > 180.0f) wrapped -= 360.0f;
         if (wrapped < -180.0f) wrapped += 360.0f;
         return wrapped;
-    }
-
-    private void beginAutomation() {
-        this.running = true;
-        this.cyclePhase = 19;
-        this.baseYaw = RotationUtil.c();
-        this.rotationController = new FixedRotationController(this.baseYaw + YAW_CURVE[19], PITCH_CURVE[19]);
-        RotationManager.INSTANCE.setController(this.rotationController);
-        MovementInputHelper.releaseMovementKeys();
-    }
-
-    private void stopAutomation() {
-        this.running = false;
-        if (this.rotationController != null) {
-            RotationManager.INSTANCE.releaseController(this.rotationController);
-            this.rotationController = null;
-        }
-        MovementInputHelper.releaseMovementKeys();
-        this.useItemKey.onTick(0);
-    }
-
-    private void advanceCycle() {
-        int phase = this.cyclePhase;
-        float forward = FORWARD_CURVE[phase];
-        float strafe = STRAFE_CURVE[phase];
-        boolean jumping = phase >= 1 && phase <= 19;
-        boolean use = phase >= 7;
-        MovementInputHelper.synchronizeDirectionalInput(forward > 0.01f, forward < -0.01f, strafe < -0.01f, strafe > 0.01f);
-        MovementInputHelper.setJumpPressed(jumping);
-        this.useItemKey.onTick(use ? 1 : 0);
-        int next = (phase + 1) % YAW_CURVE.length;
-        if (this.rotationController != null) {
-            this.rotationController.setTargetRotation(this.baseYaw + YAW_CURVE[next], PITCH_CURVE[next]);
-        }
-        this.cyclePhase = next;
     }
 }
